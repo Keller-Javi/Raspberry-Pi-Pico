@@ -40,7 +40,6 @@ l = Pin("LED", Pin.OUT)
 
 def save_data(data):
     # Save non volatile parameters in db.json (setpoint, periodo, modo, rele)   
-    # Guarda en db.json los parámetros no volátiles 
     try:
         with open("db.json", "w") as file:
             ujson.dump(data, file)
@@ -49,7 +48,6 @@ def save_data(data):
         print("Error al guardar los datos")
 
 def load_data():
-    # Carga los parámetros desde db.json o devuelve {} si no existe/da error
     # Load parameters from db.json or return {} in case of error
     try:
         with open("db.json", "r") as file:
@@ -83,14 +81,14 @@ def sub_cb(topic, msg, retained):
     if topic_d == f"{id}/periodo":
         db["periodo"] = int(msg.decode())
         save_data(db)
-    if topic_d == f"{id}/destello": 
-        # El comando “destello” no se almacena en db.json, solo lanza la tarea de parpadeo
+    if topic_d == f"{id}/destello":
+        # The "destello" command is not saved, only execute task of flash
         asyncio.create_task(flash_led())
     if topic_d == f"{id}/modo":
         db["modo"] = int(msg.decode())
         save_data(db)
     if topic_d == f"{id}/rele": 
-        # Si llega “rele”, alterna el estado del relé y actualiza db.json
+        # If receive "rele", togle relay state and update db.json
         if msg.decode() == "rele":
             if db["rele"] == 0:
                 r.value(1)
@@ -107,7 +105,7 @@ async def flash_led():
 
 async def periodic_run():
     try:
-        #d.measure() # Hace la lectura del sensor
+        d.measure() # Hace la lectura del sensor
         
         try:
             temperatura = d.temperature()
@@ -120,12 +118,12 @@ async def periodic_run():
             
         print("Por crear el .json")
 
-        # create json data 
+        # Create json data 
         data_json = ujson.dumps({"temperatura": temperatura, "humedad": humedad, "setpoint": db["setpoint"],"periodo": db["periodo"], "modo": db["modo"]})
             
         print("Se creó el .json")
 
-        # publish data in a "database"
+        # Publish data in a "database"
         await client.publish(id, data_json, qos = 1) 
 
         print("Datos publicados")
@@ -169,7 +167,6 @@ async def main(client):
     r.value(db["rele"])
 
     periodic_task = asyncio.create_task(periodic_run())
-    # Lanzamos periodic_run en segundo plano para no bloquear el loop principal
 
     while True:
         if periodic_task.done():
