@@ -119,7 +119,7 @@ async def periodic_run():
         print("Por crear el .json")
 
         # Create json data 
-        data_json = ujson.dumps({"temperatura": temperatura, "humedad": humedad, "setpoint": db["setpoint"],"periodo": db["periodo"], "modo": db["modo"]})
+        data_json = ujson.dumps({"temperatura": temperatura, "humedad": humedad, "setpoint": db["setpoint"],"periodo": db["periodo"], "modo": db["modo"], "rele": db["rele"]})
             
         print("Se creó el .json")
 
@@ -161,6 +161,7 @@ async def main(client):
     global flash_band
 
     await client.connect()
+    print("Conectado al broker MQTT")
 
     await asyncio.sleep(2)  # Give broker time
 

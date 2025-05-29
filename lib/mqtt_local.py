@@ -1,10 +1,14 @@
 # mqtt_local.py Local configuration for mqtt_as demo programs.
 from sys import platform, implementation
 from mqtt_as import config
-from settings import SSID, password, BROKER
+from settings import SSID, password, BROKER, PUERTO, PASWD, USR
 
 config['server'] = BROKER  # Change to suit
-#  config['server'] = 'test.mosquitto.org'
+config['port'] = PUERTO  # Change to suit
+config['user'] = USR  # Change to suit
+config['password'] = PASWD  # Change to suit
+config['ssl'] = True  # Uncomment for SSL/TLS connection
+
 
 # Not needed if you're only using ESP8266
 config['ssid'] = SSID

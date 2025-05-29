@@ -1,4 +1,4 @@
-# Raspberry Pi Pico W Thermostat
+# Raspberry Pi Pico W Termostato
 
 Solución al ejercicio de **IC511 – Internet de las Cosas, Sensores y Redes**.
 
@@ -12,7 +12,7 @@ Termostato con Raspberry Pi Pico W, sensor DHT22 y relé, que puede funcionar en
 ## Funcionalidades
 
 - Programado en MicroPython con `uasyncio` y `mqtt_as`.  
-- Comunicación segura MQTT (MQTTS).  
+- Comunicación segura MQTT (MQTTS).
 - Publica cada _periodo_ un JSON en `ID_DEL_DISPOSITIVO` con:
   - temperatura  
   - humedad  
