@@ -1,20 +1,22 @@
 # (C) Copyright Peter Hinch 2017-2019.
 # Released under the MIT licence.
 
-# Termostato con Raspberry Pi Pico W + DHT22 + relé
-# - Modo manual/automático
-# - Publica temperatura, humedad, setpoint, periodo y modo en JSON
-# - Se suscribe a tópicos para cambiar parámetros y destellar LED
-# - Almacena parámetros no volátiles en db.json
+# Example of a DHT22 sensor with MQTT.
+# The DHT22 is connected to GPIO13.
+# The LED of the device is toggled by a message on the topic <device_id>/LED.
+# The device publishes its temperature and humidity every 60 seconds.
+# Returns a JSON object with the following structure:
+# {
+#   "temperatura": <float>,
+#   "humedad": <float>
+# }
+# Another JSON object is returned when the LED is toggled:
+# {
+#   "estado": <int>
+# }
 
 # red LED: ON == WiFi fail
 
-# modo == 0 ---> manual
-# modo == 1 ---> automático
-# rele == 1 ---> apagado
-# rele == 0 ---> encendido
-
-import os
 from mqtt_as import MQTTClient
 from mqtt_local import config
 import uasyncio as asyncio
@@ -30,80 +32,32 @@ for b in machine.unique_id():
 print("La id del dispositivo es: " + id)
 
 # Set input of sensor
-d = dht.DHT22(Pin(13))
-
-# Set relay pin as output
-r = Pin(16, Pin.OUT)
+d = dht.DHT22(Pin(14))
 
 # Set LED pin as output
 l = Pin("LED", Pin.OUT)
 
-def save_data(data):
-    # Save non volatile parameters in db.json (setpoint, periodo, modo, rele)   
-    try:
-        with open("db.json", "w") as file:
-            ujson.dump(data, file)
-            print("Datos guardados de manera correcta")
-    except:
-        print("Error al guardar los datos")
-
-def load_data():
-    # Load parameters from db.json or return {} in case of error
-    try:
-        with open("db.json", "r") as file:
-            data = ujson.load(file)
-            return data
-    except:
-        print("Hubo un error a cargar los datos")
-        return {}
-
-try: # Try if a database exist
-    os.stat("db.json")
-    db = load_data()
-except: # Set default values  
-    db = load_data()
-    db["setpoint"] = 25
-    db["periodo"] = 60
-    db["modo"] = 1
-    db["rele"] = 1
-    save_data(db)
-
 def sub_cb(topic, msg, retained):
-    global flash_band
     print('Topic = {} -> Valor = {}'.format(topic.decode(), msg.decode()))
 
     topic_d = topic.decode()
 
-    # The values are load in a database
-    if topic_d == f"{id}/setpoint":
-        db["setpoint"] = int(msg.decode())
-        save_data(db)
-    if topic_d == f"{id}/periodo":
-        db["periodo"] = int(msg.decode())
-        save_data(db)
-    if topic_d == f"{id}/destello":
-        # The "destello" command is not saved, only execute task of flash
-        asyncio.create_task(flash_led())
-    if topic_d == f"{id}/modo":
-        db["modo"] = int(msg.decode())
-        save_data(db)
-    if topic_d == f"{id}/rele": 
-        # If receive "rele", togle relay state and update db.json
-        if msg.decode() == "rele":
-            if db["rele"] == 0:
-                r.value(1)
-                db["rele"] = 1
-            else:
-                r.value(0)
-                db["rele"] = 0
-            save_data(db)
+    # Check if the topic is for toggling the LED
+    if topic_d == f"{id}/LED":
+            asyncio.create_task(active_led(msg.decode()))
 
-async def flash_led():
-    for i in range(0,30):
-        l.toggle()
-        await asyncio.sleep_ms(200)
+# Function to toggle the LED and publish its state
+# This function is called when a message is received on the LED topic
+async def active_led(a):
+    l.toggle()  # Toggle the LED state
+    print("LED toggled")
+    data_json = ujson.dumps({"estado": l.value()})
+    await client.publish(str(id)+"/estado", data_json, qos = 1) 
 
+# Function to periodically read the DHT22 sensor and publish data
 async def periodic_run():
+    temperatura = 0
+    humedad = 0
     try:
         d.measure() # Hace la lectura del sensor
         
@@ -119,30 +73,20 @@ async def periodic_run():
         print("Por crear el .json")
 
         # Create json data 
-        data_json = ujson.dumps({"temperatura": temperatura, "humedad": humedad, "setpoint": db["setpoint"],"periodo": db["periodo"], "modo": db["modo"], "rele": db["rele"]})
+        #data_json_m = ujson.dumps({"temperatura": temperatura, "humedad": humedad})
+        data_json_m = ujson.dumps({"temperatura": humedad, "humedad": temperatura})
             
         print("Se creó el .json")
 
-        # Publish data in a "database"
-        await client.publish(id, data_json, qos = 1) 
+        # Publish data in a broker
+        await client.publish(id, data_json_m, qos = 1) 
 
         print("Datos publicados")
-
-        if db["modo"] == 1 and temperatura > db["setpoint"]:
-            if db["rele"] == 1: # Turn on relay
-                    r.value(0)
-                    db["rele"] = 0
-                    save_data(db)
-        elif db["modo"] == 1: # Turn off relay 
-            if db["rele"] == 0:
-                    r.value(1)
-                    db["rele"] = 1
-                    save_data(db)
 
     except OSError as e:
             print("Sin sensor")
 
-    await asyncio.sleep(db["periodo"])
+    await asyncio.sleep(60)  # wait 60 seconds before next run
 
 async def wifi_han(state):
     print('Wifi is ', 'up' if state else 'down')
@@ -150,25 +94,20 @@ async def wifi_han(state):
 
 # If you connect with clean_session True, must re-subscribe (MQTT spec 3.1.2.4)
 async def conn_han(client):
-    await client.subscribe(id)
-    await client.subscribe(id + '/setpoint', 1)
-    await client.subscribe(id + '/periodo', 1)
-    await client.subscribe(id + '/destello', 1)
-    await client.subscribe(id + '/modo', 1)
-    await client.subscribe(id + '/rele', 1)
+    await client.subscribe(id + '/LED', 1)
 
 async def main(client):
-    global flash_band
-
     await client.connect()
     print("Conectado al broker MQTT")
 
     await asyncio.sleep(2)  # Give broker time
 
-    r.value(db["rele"])
+    # Publish initial LED state
+    l.value(0)  # Ensure LED is off initially
+    data_json = ujson.dumps({"estado": l.value()})
+    await client.publish(str(id)+"/estado", data_json, qos = 1) 
 
     periodic_task = asyncio.create_task(periodic_run())
-
     while True:
         if periodic_task.done():
             periodic_task = asyncio.create_task(periodic_run())
