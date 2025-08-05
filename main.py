@@ -1,18 +1,15 @@
 # (C) Copyright Peter Hinch 2017-2019.
 # Released under the MIT licence.
 
-# Termostato con Raspberry Pi Pico W + DHT22 + relé
-# - Modo manual/automático
-# - Publica temperatura, humedad, setpoint, periodo y modo en JSON
+# Titulo
+# - Publica temperatura, temperatura minima y máxima, histeresis, periodo y porcentaje de luz medido y el valor para activar el foco en JSON
 # - Se suscribe a tópicos para cambiar parámetros y destellar LED
-# - Almacena parámetros no volátiles en db.json
+# - Almacena parámetros no volátiles (temperatura maxima y mínima, histeresis, periodo y porcentaje de luz para activar el foco) en db.json
+# - Destello de LED al recibir el comando "destello" a modo de prueba
 
 # red LED: ON == WiFi fail
 
-# modo == 0 ---> manual
-# modo == 1 ---> automático
-# rele == 1 ---> apagado
-# rele == 0 ---> encendido
+
 
 import os
 from mqtt_as import MQTTClient
@@ -62,10 +59,14 @@ try: # Try if a database exist
     db = load_data()
 except: # Set default values  
     db = load_data()
-    db["setpoint"] = 25
+    db["temp_max"] = 30
+    db["temp_min"] = 20
+    db["histeresis"] = 2
     db["periodo"] = 60
-    db["modo"] = 1
-    db["rele"] = 1
+    db["porcentaje_luz"] = 30
+    db["foco"] = 0
+    db["estufa"] = 0
+    db["ventilador"] = 0
     save_data(db)
 
 def sub_cb(topic, msg, retained):
@@ -75,28 +76,24 @@ def sub_cb(topic, msg, retained):
     topic_d = topic.decode()
 
     # The values are load in a database
-    if topic_d == f"{id}/setpoint":
-        db["setpoint"] = int(msg.decode())
+    if topic_d == f"{id}/temp_max":
+        db["temp_max"] = int(msg.decode())
+        save_data(db)
+    if topic_d == f"{id}/temp_min":
+        db["temp_min"] = int(msg.decode())
+        save_data(db)
+    if topic_d == f"{id}/histeresis":
+        db["histeresis"] = int(msg.decode())
         save_data(db)
     if topic_d == f"{id}/periodo":
         db["periodo"] = int(msg.decode())
         save_data(db)
+    if topic_d == f"{id}/porcentaje_luz":
+        db["porcentaje_luz"] = int(msg.decode())
+        save_data(db)
     if topic_d == f"{id}/destello":
         # The "destello" command is not saved, only execute task of flash
         asyncio.create_task(flash_led())
-    if topic_d == f"{id}/modo":
-        db["modo"] = int(msg.decode())
-        save_data(db)
-    if topic_d == f"{id}/rele": 
-        # If receive "rele", togle relay state and update db.json
-        if msg.decode() == "rele":
-            if db["rele"] == 0:
-                r.value(1)
-                db["rele"] = 1
-            else:
-                r.value(0)
-                db["rele"] = 0
-            save_data(db)
 
 async def flash_led():
     for i in range(0,30):
@@ -111,15 +108,18 @@ async def periodic_run():
             temperatura = d.temperature()
         except OSError as e:
             print("Sin sensor temperatura")
+
         try:
-            humedad=d.humidity()
+            sensor_luz = 776
         except OSError as e:
-            print("Sin sensor humedad")
+            print("Sin sensor de luz")
             
         print("Por crear el .json")
 
         # Create json data 
-        data_json = ujson.dumps({"temperatura": temperatura, "humedad": humedad, "setpoint": db["setpoint"],"periodo": db["periodo"], "modo": db["modo"], "rele": db["rele"]})
+        data_json = ujson.dumps({"temperatura": temperatura, "porcentaje_luz": (sensor_luz/4095)*100,"periodo": db["periodo"],
+                                  "temp_min": db["temp_min"], "temp_max": db["temp_max"], "histeresis": db["histeresis"],
+                                  "foco": db["foco"], "estufa": db["estufa"], "ventilador": db["ventilador"]})
             
         print("Se creó el .json")
 
@@ -128,16 +128,39 @@ async def periodic_run():
 
         print("Datos publicados")
 
-        if db["modo"] == 1 and temperatura > db["setpoint"]:
-            if db["rele"] == 1: # Turn on relay
-                    r.value(0)
-                    db["rele"] = 0
-                    save_data(db)
-        elif db["modo"] == 1: # Turn off relay 
-            if db["rele"] == 0:
-                    r.value(1)
-                    db["rele"] = 1
-                    save_data(db)
+        # Check if the temperature is in the range
+        if temperatura > db["temp_max"] + db["histeresis"]:
+            if db["ventilador"] == 0:
+                db["ventilador"] = 1
+                save_data(db)
+                print("Ventilador encendido")
+        elif temperatura < db["temp_min"] - db["histeresis"]:
+            if db["ventilador"] == 1:
+                db["ventilador"] = 0
+                save_data(db)
+                print("Ventilador apagado")
+        
+        if temperatura < db["temp_min"] - db["histeresis"]:
+            if db["estufa"] == 0:
+                db["estufa"] = 1
+                save_data(db)
+                print("Estufa encendida")
+        elif temperatura > db["temp_max"] + db["histeresis"]:
+            if db["estufa"] == 1:
+                db["estufa"] = 0
+                save_data(db)
+                print("Estufa apagada")
+        
+        if (sensor_luz/4095)*100 < db["porcentaje_luz"]:
+            if db["foco"] == 0:
+                db["foco"] = 1
+                save_data(db)
+                print("Foco encendido")
+        elif (sensor_luz/4095)*100 >= db["porcentaje_luz"]:
+            if db["foco"] == 1:
+                db["foco"] = 0
+                save_data(db)
+                print("Foco apagado")
 
     except OSError as e:
             print("Sin sensor")
@@ -151,11 +174,12 @@ async def wifi_han(state):
 # If you connect with clean_session True, must re-subscribe (MQTT spec 3.1.2.4)
 async def conn_han(client):
     await client.subscribe(id)
-    await client.subscribe(id + '/setpoint', 1)
+    await client.subscribe(id + '/temp_min', 1)
+    await client.subscribe(id + '/temp_max', 1)
     await client.subscribe(id + '/periodo', 1)
     await client.subscribe(id + '/destello', 1)
-    await client.subscribe(id + '/modo', 1)
-    await client.subscribe(id + '/rele', 1)
+    await client.subscribe(id + '/histeresis', 1)
+    await client.subscribe(id + '/porcenaje_luz', 1)
 
 async def main(client):
     global flash_band
