@@ -9,8 +9,6 @@
 
 # red LED: ON == WiFi fail
 
-
-
 import os
 from mqtt_as import MQTTClient
 from mqtt_local import config
@@ -27,13 +25,16 @@ for b in machine.unique_id():
 print("La id del dispositivo es: " + id)
 
 # Set input of sensor
-d = dht.DHT22(Pin(13))
-
-# Set relay pin as output
-r = Pin(16, Pin.OUT)
+temperature_sensor = dht.DHT22(Pin(27))
+light_sensor = machine.ADC(26)
 
 # Set LED pin as output
 l = Pin("LED", Pin.OUT)
+
+# Set relayS pin as output
+cooler = Pin(16, Pin.OUT) # Ventilador
+heater = Pin(17, Pin.OUT) # Estufa
+light = Pin(18, Pin.OUT) # Foco
 
 def save_data(data):
     # Save non volatile parameters in db.json (setpoint, periodo, modo, rele)   
@@ -96,28 +97,75 @@ def sub_cb(topic, msg, retained):
         asyncio.create_task(flash_led())
 
 async def flash_led():
-    for i in range(0,30):
+    for _ in range(0,30):
         l.toggle()
         await asyncio.sleep_ms(200)
 
+def update_actuators():
+    # Update actuators based on the current state in db
+    cooler.value(db["ventilador"])
+    heater.value(db["estufa"])
+    light.value(db["foco"])
+    print("Actuadores actualizados: Ventilador={}, Estufa={}, Foco={}".format(db["ventilador"], db["estufa"], db["foco"]))
+
+def actuators_control(temperature, light_percentage):
+    if temperature > (db["temp_max"] + db["histeresis"]):
+            if db["ventilador"] == 0:
+                db["ventilador"] = 1
+                save_data(db)
+                print("Ventilador encendido")
+    elif temperature < (db["temp_min"] - db["histeresis"]):
+            if db["ventilador"] == 1:
+                db["ventilador"] = 0
+                save_data(db)
+                print("Ventilador apagado")
+        
+    if temperature < (db["temp_min"] - db["histeresis"]):
+            if db["estufa"] == 0:
+                db["estufa"] = 1
+                save_data(db)
+                print("Estufa encendida")
+    elif temperature > (db["temp_max"] + db["histeresis"]):
+            if db["estufa"] == 1:
+                db["estufa"] = 0
+                save_data(db)
+                print("Estufa apagada")
+    
+    if light_percentage < db["porcentaje_luz"]:
+            if db["foco"] == 0:
+                db["foco"] = 1
+                save_data(db)
+                print("Foco encendido")
+    elif light_percentage >= db["porcentaje_luz"]:
+            if db["foco"] == 1:
+                db["foco"] = 0
+                save_data(db)
+                print("Foco apagado")
+    
+    # Update actuators based on the current state in db
+    update_actuators()
+
 async def periodic_run():
     try:
-        d.measure() # Hace la lectura del sensor
+        temperature_sensor.measure()
+        temperature = None
+        light_percentage = None
         
         try:
-            temperatura = d.temperature()
+            temperature = temperature_sensor.temperature()
         except OSError as e:
             print("Sin sensor temperatura")
 
         try:
-            sensor_luz = 776
+            light_value = light_sensor.read_u16()
+            light_percentage = (light_value / 65535) * 100 if light_value is not None else 0
         except OSError as e:
             print("Sin sensor de luz")
             
         print("Por crear el .json")
 
         # Create json data 
-        data_json = ujson.dumps({"temperatura": temperatura, "porcentaje_luz": (sensor_luz/4095)*100,"periodo": db["periodo"],
+        data_json = ujson.dumps({"temperatura": temperature, "porcentaje_luz": (light_percentage/65535)*100,"periodo": db["periodo"],
                                   "temp_min": db["temp_min"], "temp_max": db["temp_max"], "histeresis": db["histeresis"],
                                   "foco": db["foco"], "estufa": db["estufa"], "ventilador": db["ventilador"]})
             
@@ -128,39 +176,8 @@ async def periodic_run():
 
         print("Datos publicados")
 
-        # Check if the temperature is in the range
-        if temperatura > db["temp_max"] + db["histeresis"]:
-            if db["ventilador"] == 0:
-                db["ventilador"] = 1
-                save_data(db)
-                print("Ventilador encendido")
-        elif temperatura < db["temp_min"] - db["histeresis"]:
-            if db["ventilador"] == 1:
-                db["ventilador"] = 0
-                save_data(db)
-                print("Ventilador apagado")
-        
-        if temperatura < db["temp_min"] - db["histeresis"]:
-            if db["estufa"] == 0:
-                db["estufa"] = 1
-                save_data(db)
-                print("Estufa encendida")
-        elif temperatura > db["temp_max"] + db["histeresis"]:
-            if db["estufa"] == 1:
-                db["estufa"] = 0
-                save_data(db)
-                print("Estufa apagada")
-        
-        if (sensor_luz/4095)*100 < db["porcentaje_luz"]:
-            if db["foco"] == 0:
-                db["foco"] = 1
-                save_data(db)
-                print("Foco encendido")
-        elif (sensor_luz/4095)*100 >= db["porcentaje_luz"]:
-            if db["foco"] == 1:
-                db["foco"] = 0
-                save_data(db)
-                print("Foco apagado")
+        # Set actuators based on temperature and light sensor values
+        actuators_control(temperature, light_percentage)
 
     except OSError as e:
             print("Sin sensor")
@@ -189,7 +206,7 @@ async def main(client):
 
     await asyncio.sleep(2)  # Give broker time
 
-    r.value(db["rele"])
+    update_actuators()  # Initialize actuators based on db state
 
     periodic_task = asyncio.create_task(periodic_run())
 
